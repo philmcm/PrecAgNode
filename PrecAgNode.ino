@@ -1,5 +1,8 @@
+#include <MKRWAN.h>
+#include <CayenneLPP.h>
 #include "NewOLED.h" // Newhaven OLED Library
-#include "PrecAg.h" // Sensor Library
+#include "PrecAg.h"  // Sensor Library
+#include <RTCZero.h> // real-time clock
 
 #include "PrecAgNode.h"
 
@@ -12,10 +15,40 @@ PrecAg pAg;
 STATES currState, nextState;
 OLED_SCREEN currScreen;
 
+RTCZero rtc;
+
+_lora_band region = AU915;
+LoRaModem modem(Serial1);
+CayenneLPP lpp(51);
+
 void setup() {
   Serial.begin(9600);
   while(!Serial);    // time to get serial running
 
+  // set RTC
+  rtc.begin();
+  rtc.setTime(9, 0, 0); // initialise to 09:00:00
+  
+  // initialise radio
+  if (!modem.begin(region)) {
+    Serial.println("Failed to start module");
+    while (1) {}
+  };
+
+  Serial.print("Device EUI is: ");
+  Serial.println(modem.deviceEUI());
+
+  int connected = modem.joinOTAA(appEui, appKey);
+  if (!connected) {
+    Serial.println("Something went wrong; are you indoor? Move near a window and retry");
+    while (1) {}
+  }
+   Serial.println("Successfully joined the network!");
+
+  // Serial.println("Enabling ADR and setting low spreading factor");
+  modem.setADR(true);
+  modem.dataRate(5);
+ 
   // initialise the OLED
   oled.oledSetup();
   currScreen = SCREEN_1;
@@ -28,21 +61,66 @@ void setup() {
 
 void ttnUpdate()
 {
-  Serial.println("TTN UPDATE HERE!");
+    
+  Serial.println("Sending TTN update");
+  
+  // Prepare Cayenne LPP
+  lpp.reset();
+  lpp.addTemperature(1, pAg.getTemperature());
+  lpp.addBarometricPressure(2, pAg.getPressure());
+  lpp.addAnalogOutput(3, pAg.getAltitude());
+  lpp.addRelativeHumidity(4, pAg.getHumidity());
+  lpp.addLuminosity(5, (float) pAg.getLight());
+  lpp.addAnalogOutput(6, pAg.getMoisture()/100.0);
+  lpp.addAnalogOutput(7, (float) pAg.getNitrogen()); 
+  lpp.addAnalogOutput(8, (float) pAg.getPhosphorous());
+  lpp.addAnalogOutput(9, (float) pAg.getPotassium());
+
+  // Send the data
+  modem.beginPacket();
+  modem.write(lpp.getBuffer(), lpp.getSize());
+  int err = modem.endPacket(true);
+  if (err > 0) {
+    Serial.println("Message sent.");
+  } else {
+    Serial.println("Error sending data.");
+  }
+  // check for TTN downlinks
+  char rcv[64];
+  int i = 0;
+  while (modem.available()) {
+    rcv[i++] = (char)modem.read();
+  }
+  Serial.print("Received: ");
+  for (unsigned int j = 0; j < i; j++) {
+    Serial.print(rcv[j] >> 4, HEX);
+    Serial.print(rcv[j] & 0xF, HEX);
+    Serial.print(" ");
+  }
+  Serial.println();
+  if (i==6) {
+    Serial.println("Setting Valve Open/Close Times");
+    pAg.setValveOpenTime((byte)rcv[0], (byte)rcv[1], (byte)rcv[2], (byte)rcv[3], (byte)rcv[4], (byte)rcv[5]);
+  }
 }
 
 void loop() {
   char line[17];
+  byte hours, mins, secs;
   String str_temp;
   static unsigned long counter = 0;
 
   // avoid delay() for precise control of timing
   unsigned long currentMillis = millis();
-  
+    
   if (currentMillis - previousMillis > interval) {
     previousMillis = currentMillis;
     currState = nextState;
 
+
+    // check to see if the valve should be opened or closed
+    pAg.checkValve(rtc.getHours(), rtc.getMinutes(), rtc.getSeconds());
+  
     switch (currState) {
       case READ_SENSORS:
         counter++;
@@ -95,7 +173,7 @@ void loop() {
         Serial.print(",Hum:");
         Serial.print(pAg.getHumidity());
         Serial.print("(%),Light:");
-        Serial.print(pAg.getLight(),DEC);
+        Serial.print(pAg.getLight());
         Serial.print(",Moist:");
         Serial.print(pAg.getMoisture());
         Serial.print(",N:");
@@ -142,6 +220,26 @@ void loop() {
             str_temp.toCharArray(line, 17);
             oled.outputLine(2, (unsigned char *)line);
             break;
+          case SCREEN_5:
+            hours = rtc.getHours();
+            mins = rtc.getMinutes();
+            secs = rtc.getSeconds();
+            str_temp = String("Time: ") +
+              ((hours < 10) ? String("0") : String("")) +
+              String(hours) + String(":") +
+              ((mins < 10) ? String("0") : String("")) +
+              String(mins) + String(":") +
+              ((secs < 10) ? String("0") : String("")) +
+              String(secs);
+            str_temp.toCharArray(line, 17);
+            oled.outputLine(1, (unsigned char *)line);
+            if (pAg.getValve() == true)
+              str_temp = String("Valve: Open");
+            else
+              str_temp = String("Valve: Closed");
+            str_temp.toCharArray(line, 17);
+            oled.outputLine(2, (unsigned char *)line);
+            break;
         }
 
         // switch to next state, depending on value of counter
@@ -170,9 +268,12 @@ void loop() {
             currScreen=SCREEN_4;
             break;
           case SCREEN_4:
+            currScreen=SCREEN_5;
+            break;
+          case SCREEN_5:
             currScreen=SCREEN_1;
             break;
-        }
+          }
         if ((counter % TTN_UPDATE_INTERVAL) == 0) {
           interval = 0; // send TTN update immediately
           nextState = UPDATE_TTN;
