@@ -17,7 +17,7 @@ OLED_SCREEN currScreen;
 
 RTCZero rtc;
 
-_lora_band region = AU915;
+_lora_band region = AS923;
 LoRaModem modem(Serial1);
 CayenneLPP lpp(51);
 
@@ -43,7 +43,7 @@ void setup() {
     Serial.println("Something went wrong; are you indoor? Move near a window and retry");
     while (1) {}
   }
-   Serial.println("Successfully joined the network!");
+  Serial.println("Successfully joined the network!");
 
   // Serial.println("Enabling ADR and setting low spreading factor");
   modem.setADR(true);
@@ -117,10 +117,10 @@ void loop() {
     previousMillis = currentMillis;
     currState = nextState;
 
-
     // check to see if the valve should be opened or closed
     pAg.checkValve(rtc.getHours(), rtc.getMinutes(), rtc.getSeconds());
   
+    // process State Machine  
     switch (currState) {
       case READ_SENSORS:
         counter++;
