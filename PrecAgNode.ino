@@ -1,3 +1,8 @@
+/*  
+  PrecAgNode.ino - Precision Agriculture Node Arduino Sketch.
+  Created for ENGG4201/8201 by Andrew Miller, Phil McMillan
+*/
+
 #include <MKRWAN.h>
 #include <CayenneLPP.h>
 #include "NewOLED.h" // Newhaven OLED Library
